@@ -13,25 +13,6 @@ An ExileCore plugin for Path of Exile 1 that displays color-formatted Path of Bu
 - Provides a movable, resizable, scrollable, and collapsible notes window.
 - Stores source mappings and fetched notes in its own config without modifying PassiveSkillTreePlanter builds.
 
-## Installation
-
-Clone the repository into ExileCore's source plugin directory:
-
-```powershell
-cd "C:\path\to\ExileCore\Plugins\Source"
-git clone https://github.com/exCore-PoE1/PassiveSkillTreeNotes.git
-cd PassiveSkillTreeNotes
-dotnet build --configuration Release
-```
-
-The project writes the compiled plugin to:
-
-```text
-Plugins/Compiled/PassiveSkillTreeNotes/
-```
-
-Enable both `PassiveSkillTreePlanter` and `PassiveSkillTreeNotes` in ExileCore.
-
 ## Usage
 
 1. Create or select a build in PassiveSkillTreePlanter.
@@ -45,5 +26,3 @@ The companion cache is stored under:
 ```text
 config/PassiveSkillTreeNotes/build-notes.json
 ```
-
-Local cache data and compiled binaries are not part of this repository.
