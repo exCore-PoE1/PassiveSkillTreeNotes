@@ -64,7 +64,6 @@ public sealed class PassiveSkillTreeNotes
 
         ImGui.SetNextWindowPos(new Vector2(280, 20), ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowSize(new Vector2(560, 720), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSizeConstraints(new Vector2(280, 120), new Vector2(1200, 1400));
 
         var visibleTitle = string.IsNullOrWhiteSpace(_selectedBuild)
             ? "PoB Notes"
