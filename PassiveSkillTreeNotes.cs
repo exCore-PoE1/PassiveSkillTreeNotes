@@ -37,7 +37,8 @@ public sealed class PassiveSkillTreeNotes
     private long _nextRefreshAt;
     private string? _observedBuildPath;
     private DateTime _observedBuildWriteTimeUtc;
-    private bool _resetScroll;
+    private bool _resetTreeScroll;
+    private bool _resetLeagueStartScroll;
     private Task<FetchResult>? _fetchTask;
     private IReadOnlyList<ColoredNotesRenderer.StyledCharacter> _notes = [];
 
@@ -53,8 +54,16 @@ public sealed class PassiveSkillTreeNotes
 
     public override void Render()
     {
-        if (!Settings.Enable.Value ||
-            GameController.IngameState?.IngameUi?.TreePanel?.IsVisible != true)
+        if (!Settings.Enable.Value)
+        {
+            return;
+        }
+
+        var ingameUi = GameController.IngameState?.IngameUi;
+        var showTreeNotes = ingameUi?.TreePanel?.IsVisible == true;
+        var showLeagueStartNotes = Settings.LeagueStartMode.Value &&
+                                   ingameUi?.PurchaseWindow?.IsVisible == true;
+        if (!showTreeNotes && !showLeagueStartNotes)
         {
             return;
         }
@@ -62,6 +71,21 @@ public sealed class PassiveSkillTreeNotes
         RefreshPlanterStateIfDue();
         CompleteFetchIfReady();
 
+        if (showTreeNotes)
+        {
+            DrawNotesWindow("PassiveSkillTreeNotes", ref _resetTreeScroll);
+        }
+
+        if (showLeagueStartNotes)
+        {
+            DrawNotesWindow(
+                "PassiveSkillTreeNotesLeagueStart",
+                ref _resetLeagueStartScroll);
+        }
+    }
+
+    private void DrawNotesWindow(string windowId, ref bool resetScroll)
+    {
         ImGui.SetNextWindowPos(new Vector2(280, 20), ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowSize(new Vector2(560, 720), ImGuiCond.FirstUseEver);
 
@@ -69,7 +93,7 @@ public sealed class PassiveSkillTreeNotes
             ? "PoB Notes"
             : $"PoB Notes — {_selectedBuild}";
 
-        if (!ImGui.Begin($"{visibleTitle}###PassiveSkillTreeNotes"))
+        if (!ImGui.Begin($"{visibleTitle}###{windowId}"))
         {
             ImGui.End();
             return;
@@ -89,15 +113,15 @@ public sealed class PassiveSkillTreeNotes
         }
 
         if (ImGui.BeginChild(
-                "##PassiveSkillTreeNotesScroll",
+                $"##{windowId}Scroll",
                 Vector2.Zero,
                 ImGuiChildFlags.None,
                 ImGuiWindowFlags.None))
         {
-            if (_resetScroll)
+            if (resetScroll)
             {
                 ImGui.SetScrollY(0);
-                _resetScroll = false;
+                resetScroll = false;
             }
 
             ColoredNotesRenderer.Draw(_notes);
@@ -234,7 +258,7 @@ public sealed class PassiveSkillTreeNotes
         _activeTreeUrl = string.Empty;
         _activeSourceUrl = string.Empty;
         _fetchStatus = string.Empty;
-        _resetScroll = true;
+        ResetWindowScrolls();
         _observedBuildPath = null;
         _observedBuildWriteTimeUtc = default;
 
@@ -262,7 +286,7 @@ public sealed class PassiveSkillTreeNotes
             _activeSourceUrl = string.Empty;
             _notes = [];
             _status = "No character passive tree is currently loaded.";
-            _resetScroll = true;
+            ResetWindowScrolls();
             return;
         }
 
@@ -274,7 +298,7 @@ public sealed class PassiveSkillTreeNotes
             _status = GetAssociatedSourceUrls(_selectedBuild).Count == 0
                 ? $"No PoB source has been linked to \"{_selectedBuild}\" yet."
                 : "The loaded passive tree does not match any cached PoB source for this build.";
-            _resetScroll = true;
+            ResetWindowScrolls();
             return;
         }
 
@@ -482,7 +506,13 @@ public sealed class PassiveSkillTreeNotes
         _status = string.IsNullOrWhiteSpace(trimmedNotes)
             ? "The matched PoB does not contain notes."
             : string.Empty;
-        _resetScroll = true;
+        ResetWindowScrolls();
+    }
+
+    private void ResetWindowScrolls()
+    {
+        _resetTreeScroll = true;
+        _resetLeagueStartScroll = true;
     }
 
     private void LoadCache()

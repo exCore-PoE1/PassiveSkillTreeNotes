@@ -6,4 +6,6 @@ namespace PassiveSkillTreeNotes;
 public sealed class PassiveSkillTreeNotesSettings : ISettings
 {
     public ToggleNode Enable { get; set; } = new(true);
+
+    public ToggleNode LeagueStartMode { get; set; } = new(false);
 }
