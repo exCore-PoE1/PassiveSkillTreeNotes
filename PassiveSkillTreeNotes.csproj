@@ -16,5 +16,9 @@
       <HintPath>..\..\..\ImGui.NET.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="SharpDX.Mathematics">
+      <HintPath>..\..\..\SharpDX.Mathematics.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
   </ItemGroup>
 </Project>

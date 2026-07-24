@@ -6,6 +6,10 @@ using System.Text;
 using System.Text.Json;
 using System.Xml;
 using ExileCore;
+using ExileCore.PoEMemory;
+using ExileCore.PoEMemory.Components;
+using ExileCore.PoEMemory.MemoryObjects;
+using ExileCore.Shared.Enums;
 using ExileCore.Shared.Interfaces;
 using ImGuiNET;
 
@@ -16,6 +20,27 @@ public sealed class PassiveSkillTreeNotes
 {
     private const long RefreshIntervalMilliseconds = 250;
     private const string PlanterInternalName = "PassiveSkillTreePlanter";
+    private static readonly InventorySlotE[] EquippedInventorySlots =
+    [
+        InventorySlotE.Weapon1,
+        InventorySlotE.Offhand1,
+        InventorySlotE.Weapon2,
+        InventorySlotE.Offhand2,
+        InventorySlotE.Helm1,
+        InventorySlotE.BodyArmour1,
+        InventorySlotE.Gloves1,
+        InventorySlotE.Boots1,
+        InventorySlotE.Amulet1,
+        InventorySlotE.Ring1,
+        InventorySlotE.Ring2,
+        InventorySlotE.Ring3,
+        InventorySlotE.Belt1
+    ];
+    private static readonly Dictionary<string, string[]> GemNameAliases =
+        new(StringComparer.Ordinal)
+        {
+            ["concentrated effect"] = ["conc effect"]
+        };
     private static readonly HttpClient HttpClient = new();
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -39,6 +64,10 @@ public sealed class PassiveSkillTreeNotes
     private DateTime _observedBuildWriteTimeUtc;
     private bool _resetTreeScroll;
     private bool _resetLeagueStartScroll;
+    private string _normalizedNotes = string.Empty;
+    private readonly HashSet<string> _ownedGemMetadata =
+        new(StringComparer.OrdinalIgnoreCase);
+    private long _nextOwnedGemRefreshAt;
     private Task<FetchResult>? _fetchTask;
     private IReadOnlyList<ColoredNotesRenderer.StyledCharacter> _notes = [];
 
@@ -62,7 +91,8 @@ public sealed class PassiveSkillTreeNotes
         var ingameUi = GameController.IngameState?.IngameUi;
         var showTreeNotes = ingameUi?.TreePanel?.IsVisible == true;
         var showLeagueStartNotes = Settings.LeagueStartMode.Value &&
-                                   ingameUi?.PurchaseWindow?.IsVisible == true;
+                                   (ingameUi?.PurchaseWindow?.IsVisible == true ||
+                                    ingameUi?.QuestRewardWindow?.IsVisible == true);
         if (!showTreeNotes && !showLeagueStartNotes)
         {
             return;
@@ -81,6 +111,7 @@ public sealed class PassiveSkillTreeNotes
             DrawNotesWindow(
                 "PassiveSkillTreeNotesLeagueStart",
                 ref _resetLeagueStartScroll);
+            DrawMentionedGemFrames();
         }
     }
 
@@ -177,6 +208,229 @@ public sealed class PassiveSkillTreeNotes
         ImGui.Separator();
     }
 
+    private void DrawMentionedGemFrames()
+    {
+        if (string.IsNullOrWhiteSpace(_normalizedNotes))
+        {
+            return;
+        }
+
+        RefreshOwnedGemsIfDue();
+
+        var ingameUi = GameController.IngameState?.IngameUi;
+        var purchaseWindow = ingameUi?.PurchaseWindow;
+        if (purchaseWindow?.IsVisible == true)
+        {
+            var vendorItems = purchaseWindow.TabContainer?
+                .VisibleStash?
+                .VisibleInventoryItems;
+            if (vendorItems != null)
+            {
+                foreach (var vendorItem in vendorItems)
+                {
+                    DrawGemFrameIfMentioned(
+                        vendorItem?.Item,
+                        vendorItem,
+                        Settings.ShowVendorGemNames.Value);
+                }
+            }
+        }
+
+        var rewardWindow = ingameUi?.QuestRewardWindow;
+        if (rewardWindow?.IsVisible != true)
+        {
+            return;
+        }
+
+        var rewards = rewardWindow.GetPossibleRewards();
+        if (rewards == null)
+        {
+            return;
+        }
+
+        foreach (var (entity, element) in rewards)
+        {
+            DrawGemFrameIfMentioned(
+                entity,
+                element,
+                Settings.ShowRewardGemNames.Value);
+        }
+    }
+
+    private void DrawGemFrameIfMentioned(
+        Entity? entity,
+        Element? element,
+        bool showName)
+    {
+        var metadata = entity?.Path;
+        if (entity?.IsValid != true ||
+            element?.IsVisible != true ||
+            string.IsNullOrWhiteSpace(metadata) ||
+            !metadata.StartsWith("Metadata/Items/Gems/", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (Settings.HideOwnedGems.Value && _ownedGemMetadata.Contains(metadata))
+        {
+            return;
+        }
+
+        var baseName = GameController.Files.BaseItemTypes
+            .Translate(metadata)?
+            .BaseName;
+        if (string.IsNullOrWhiteSpace(baseName))
+        {
+            return;
+        }
+
+        var normalizedName = NormalizeForMatch(baseName);
+        const string supportSuffix = " support";
+        if (normalizedName.EndsWith(supportSuffix, StringComparison.Ordinal))
+        {
+            normalizedName = normalizedName[..^supportSuffix.Length];
+        }
+
+        if (string.IsNullOrWhiteSpace(normalizedName) ||
+            !IsGemMentioned(normalizedName))
+        {
+            return;
+        }
+
+        var itemRect = element.GetClientRectCache;
+        if (itemRect.Width <= 0 || itemRect.Height <= 0)
+        {
+            return;
+        }
+
+        Graphics.DrawFrame(
+            itemRect,
+            Settings.GemBorderColor.Value,
+            Settings.GemBorderThickness.Value);
+
+        if (showName)
+        {
+            DrawGemName(baseName, itemRect);
+        }
+    }
+
+    private void DrawGemName(string baseName, SharpDX.RectangleF itemRect)
+    {
+        var textSize = Graphics.MeasureText(baseName);
+        var padding = new Vector2(4, 2);
+        var backgroundSize = textSize + padding * 2;
+        var backgroundPosition = new Vector2(
+            itemRect.Left + (itemRect.Width - backgroundSize.X) / 2,
+            itemRect.Bottom - backgroundSize.Y);
+
+        Graphics.DrawBox(
+            backgroundPosition,
+            backgroundPosition + backgroundSize,
+            SharpDX.Color.Black);
+        Graphics.DrawText(
+            baseName,
+            backgroundPosition + padding,
+            SharpDX.Color.White);
+    }
+
+    private void RefreshOwnedGemsIfDue()
+    {
+        var now = Environment.TickCount64;
+        if (now < _nextOwnedGemRefreshAt)
+        {
+            return;
+        }
+
+        _nextOwnedGemRefreshAt = now + RefreshIntervalMilliseconds;
+        _ownedGemMetadata.Clear();
+
+        if (!Settings.HideOwnedGems.Value)
+        {
+            return;
+        }
+
+        foreach (var slot in EquippedInventorySlots)
+        {
+            var inventory = TryGetPlayerInventory(slot);
+            if (inventory?.InventorySlotItems == null)
+            {
+                continue;
+            }
+
+            foreach (var inventoryItem in inventory.InventorySlotItems)
+            {
+                var socketedGems = inventoryItem?
+                    .Item?
+                    .GetComponent<Sockets>()?
+                    .SocketedGems;
+                if (socketedGems == null)
+                {
+                    continue;
+                }
+
+                foreach (var socketedGem in socketedGems)
+                {
+                    AddOwnedGem(socketedGem?.GemEntity);
+                }
+            }
+        }
+
+        AddInventoryGems(InventorySlotE.MainInventory1);
+        AddInventoryGems(InventorySlotE.ExpandedMainInventory1);
+    }
+
+    private void AddInventoryGems(InventorySlotE slot)
+    {
+        var inventory = TryGetPlayerInventory(slot);
+        if (inventory?.InventorySlotItems == null)
+        {
+            return;
+        }
+
+        foreach (var inventoryItem in inventory.InventorySlotItems)
+        {
+            AddOwnedGem(inventoryItem?.Item);
+        }
+    }
+
+    private ServerInventory? TryGetPlayerInventory(InventorySlotE slot)
+    {
+        try
+        {
+            return GameController.IngameState?
+                .ServerData?
+                .GetPlayerInventoryBySlot(slot);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void AddOwnedGem(Entity? entity)
+    {
+        var metadata = entity?.Path;
+        if (!string.IsNullOrWhiteSpace(metadata) &&
+            metadata.StartsWith(
+                "Metadata/Items/Gems/",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            _ownedGemMetadata.Add(metadata);
+        }
+    }
+
+    private bool IsGemMentioned(string normalizedName)
+    {
+        if (_normalizedNotes.Contains($" {normalizedName} ", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return GemNameAliases.TryGetValue(normalizedName, out var aliases) &&
+               aliases.Any(alias =>
+                   _normalizedNotes.Contains($" {alias} ", StringComparison.Ordinal));
+    }
+
     private void RefreshPlanterStateIfDue()
     {
         var now = Environment.TickCount64;
@@ -266,6 +520,7 @@ public sealed class PassiveSkillTreeNotes
         {
             _sourceUrlInput = string.Empty;
             _notes = [];
+            _normalizedNotes = string.Empty;
             _status = unavailableStatus;
             return;
         }
@@ -273,6 +528,7 @@ public sealed class PassiveSkillTreeNotes
         var sourceUrls = GetAssociatedSourceUrls(buildName);
         _sourceUrlInput = sourceUrls.LastOrDefault() ?? string.Empty;
         _notes = [];
+        _normalizedNotes = string.Empty;
         _status = sourceUrls.Count == 0
             ? $"No PoB source has been linked to \"{buildName}\" yet."
             : "Load one of this build's imported passive trees to select its notes.";
@@ -285,6 +541,7 @@ public sealed class PassiveSkillTreeNotes
         {
             _activeSourceUrl = string.Empty;
             _notes = [];
+            _normalizedNotes = string.Empty;
             _status = "No character passive tree is currently loaded.";
             ResetWindowScrolls();
             return;
@@ -295,6 +552,7 @@ public sealed class PassiveSkillTreeNotes
         {
             _activeSourceUrl = string.Empty;
             _notes = [];
+            _normalizedNotes = string.Empty;
             _status = GetAssociatedSourceUrls(_selectedBuild).Count == 0
                 ? $"No PoB source has been linked to \"{_selectedBuild}\" yet."
                 : "The loaded passive tree does not match any cached PoB source for this build.";
@@ -503,10 +761,38 @@ public sealed class PassiveSkillTreeNotes
     {
         var trimmedNotes = notes.Trim();
         _notes = ColoredNotesRenderer.Parse(trimmedNotes);
+        var plainNotes = string.Concat(_notes.Select(character => character.Value));
+        _normalizedNotes = $" {NormalizeForMatch(plainNotes)} ";
         _status = string.IsNullOrWhiteSpace(trimmedNotes)
             ? "The matched PoB does not contain notes."
             : string.Empty;
         ResetWindowScrolls();
+    }
+
+    private static string NormalizeForMatch(string value)
+    {
+        var normalized = new StringBuilder(value.Length);
+        var separatorPending = false;
+
+        foreach (var character in value)
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                if (separatorPending && normalized.Length > 0)
+                {
+                    normalized.Append(' ');
+                }
+
+                normalized.Append(char.ToLowerInvariant(character));
+                separatorPending = false;
+            }
+            else
+            {
+                separatorPending = true;
+            }
+        }
+
+        return normalized.ToString();
     }
 
     private void ResetWindowScrolls()
